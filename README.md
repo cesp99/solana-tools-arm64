@@ -38,6 +38,15 @@ Verify an archive came from this workflow:
 gh attestation verify cargo-build-sbf-v4.2.0-aarch64-unknown-linux-gnu.tar.gz --repo cesp99/solana-tools-arm64
 ```
 
+## The manifest
+
+[`manifest.json`](manifest.json) is a copy of Seeker IDE's toolchain
+manifest (`app/src/main/assets/solana/toolchain/manifest.json`), published
+here so the IDE's **Check for updates** can fetch it without an app release:
+the IDE adopts it when its `released` date is later than the one in use and
+reinstalls only the rows whose pinned revision changed. Keep the two files
+identical — a toolchain bump is an edit there, a copy here, one commit each.
+
 ## Consuming from Seeker IDE
 
 The IDE's toolchain manifest
