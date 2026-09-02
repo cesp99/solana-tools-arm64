@@ -1,0 +1,129 @@
+# Build the tools in versions.json for aarch64 Linux and publish each as a
+# GitHub release. Runs on GitHub's own arm64 runner — no cross-compiling —
+# inside debian:stable-slim, which is the rootfs Seeker IDE installs on the
+# phone, so the binaries link against the same glibc and OpenSSL the phone has.
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - versions.json
+      - .github/workflows/build.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and re-upload even when the release tag already exists
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  # Decide what to build: every tool in versions.json whose release tag is
+  # not published yet (or all of them under force).
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force == true }}
+        run: |
+          set -euo pipefail
+          include='[]'
+          while IFS= read -r row; do
+            tool=$(jq -r .tool <<<"$row"); version=$(jq -r .version <<<"$row")
+            tag="$tool-v$version"
+            if [ "$FORCE" != "true" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "$tag is already published; skipping"
+              continue
+            fi
+            include=$(jq -c --argjson r "$row" '. + [$r]' <<<"$include")
+          done < <(jq -c '.tools[]' versions.json)
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+          echo "any=$([ "$include" != "[]" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "building: $include"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-24.04-arm
+    container: debian:stable-slim
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      TAG: ${{ matrix.tool }}-v${{ matrix.version }}
+      ASSET: ${{ matrix.tool }}-v${{ matrix.version }}-aarch64-unknown-linux-gnu.tar.gz
+      CARGO_HOME: /root/.cargo
+      RUSTUP_HOME: /root/.rustup
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies (what the phone's apt step installs)
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates build-essential pkg-config libssl-dev git xz-utils
+          curl -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable --no-modify-path >/dev/null
+          echo "/root/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: cargo install ${{ matrix.crate }} ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          locked=""; [ "${{ matrix.locked }}" = "true" ] && locked="--locked"
+          cargo install "${{ matrix.crate }}" --version "${{ matrix.version }}" $locked \
+            --root "$PWD/out" --target-dir "$PWD/target"
+          for bin in $(jq -r '.tools[] | select(.tool=="${{ matrix.tool }}") | .bins[]' versions.json); do
+            strip "out/bin/$bin"
+            "out/bin/$bin" --version
+          done
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          rm -f out/.crates.toml out/.crates2.json
+          tar -C out -czf "$ASSET" bin
+          sha256sum "$ASSET" | tee "$ASSET.sha256"
+          {
+            echo "tool:      ${{ matrix.tool }}"
+            echo "crate:     ${{ matrix.crate }} ${{ matrix.version }}"
+            echo "target:    aarch64-unknown-linux-gnu"
+            echo "image:     debian:stable-slim ($(. /etc/os-release && echo "$PRETTY_NAME"))"
+            echo "glibc:     $(ldd --version | head -1)"
+            echo "openssl:   $(dpkg-query -W -f='${Version}' libssl-dev)"
+            echo "rustc:     $(rustc --version)"
+            echo "cargo:     $(cargo --version)"
+            echo "command:   cargo install ${{ matrix.crate }} --version ${{ matrix.version }}$([ "${{ matrix.locked }}" = "true" ] && echo ' --locked')"
+            echo "workflow:  $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "commit:    $GITHUB_SHA"
+            echo "built:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > build-info.txt
+          cat build-info.txt
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ASSET }}
+
+      - name: Release ${{ env.TAG }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          body_path: build-info.txt
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+            build-info.txt

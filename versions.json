@@ -1,0 +1,26 @@
+{
+  "note": [
+    "The two Solana build drivers that have no arm64 Linux binary upstream.",
+    "Bumping a version here and pushing to main builds it on GitHub's arm64",
+    "runner inside debian:stable-slim — the same image Seeker IDE unpacks on",
+    "the phone — and publishes one release per tool, tagged <tool>-v<version>.",
+    "A tag that already exists is left alone; use the workflow's force input",
+    "to rebuild one."
+  ],
+  "tools": [
+    {
+      "tool": "cargo-build-sbf",
+      "crate": "cargo-build-sbf",
+      "version": "4.2.0",
+      "locked": false,
+      "bins": ["cargo-build-sbf", "cargo-test-sbf"]
+    },
+    {
+      "tool": "anchor-cli",
+      "crate": "anchor-cli",
+      "version": "1.1.2",
+      "locked": true,
+      "bins": ["anchor"]
+    }
+  ]
+}
